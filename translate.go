@@ -29,8 +29,8 @@ import (
 )
 
 //var chosenModel = "gpt-4-turbo-preview"
-var chosenModel = "o4-mini"
-var maxInputSize = 4000
+var chosenModel = "gpt-5-mini"
+var maxInputSize = 5000 
 var debug = os.Getenv("DEBUG") == "true"
 
 func getRootFolder() string { 
@@ -93,13 +93,15 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 
 	additionalCondition := fmt.Sprintf("")
 
-	systemMessage := fmt.Sprintf("Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is ```{\"id\": \"The id of the ticket\", \"title\": \"The ticket title\"}```, and the user input is ```{\"key\": \"12345\", \"fields:\": {\"summary\": \"The title of the ticket\"}}```, the output should be ```{\"id\": \"key\", \"title\": \"fields.summary\"}```", additionalCondition)
+	systemMessage := fmt.Sprintf("Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is ```{\"id\": \"The id of the ticket\", \"title\": \"The ticket title\"}```, and the user input is ```{\"key\": \"12345\", \"fields:\": {\"id\": \"1234\", \"summary\": \"The title of the ticket\"}}```, the output should be ```{\"id\": \"key\", \"title\": \"fields.summary\"}. ALWAYS go deeper than the top level of the User Input and choose accurate values like \"fields.id\" instead of just \"fields\" where it fits.```", additionalCondition)
+	// If translation is needed, you may use Liquid.
 
 	if debug { 
 		log.Printf("[DEBUG] Schemaless: Running GPT (1) with system message: %s", systemMessage)
 	}
 
-	userQuery := fmt.Sprintf("Translate the given user input JSON structure to a standard format. Use the values from the standard to guide you what to look for. The standard format should follow the pattern:\n\n```json\n%s\n```\n\nUser Input:\n```json\n%s\n```\n\nGenerate the standard output structure without providing the expected output.", standardFormat, inputDataFormat)
+	//userQuery := fmt.Sprintf("Translate the given user input JSON structure to a standard format. Use the values from the standard to guide you what to look for. The standard format should follow the pattern:\n\n```json\n%s\n```\n\nUser Input:\n```json\n%s\n```\n\nGenerate the standard output structure without providing the expected output.", standardFormat, inputDataFormat)
+	userQuery := fmt.Sprintf("Standard:\n```json\n%s\n```\n\n\n\nUser Input:\n```json\n%s\n```", standardFormat, inputDataFormat)
 
 	if len(os.Getenv("OPENAI_API_KEY")) == 0 {
 		return standardFormat, errors.New("OPENAI_API_KEY not set")
@@ -943,7 +945,14 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 	// list -> subsub
 	// maps -> childkeys
 	// strings -> build it out.
-	for childKey, v := range parsedValues {
+	//for childKey, v := range parsedValues {
+
+	log.Printf("\n\n\nSTARTING NEW LIST\n\n\n")
+	newParsedValues := parsedValues
+	for childKey, _ := range newParsedValues {
+		log.Printf("\n\nCHILDKEY START (%d): %#v\n\n", childIndex, childKey)
+		v := parsedValues[childKey]
+
 		if val, ok := v.(map[string]interface{}); ok {
 			// By passing in translatedInput we allow child objects to modify the parent?
 			newKey := fmt.Sprintf("%s.%s", parentKey, childKey)
@@ -1010,8 +1019,8 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 					}
 
 					// Reference Item in the child list
+					updated := false
 					firstItem := modificationList[0]
-					var found bool
 					for cnt, listValue := range unmarshalledList {
 						if cnt >= len(modificationList) {
 							modificationList = append(modificationList, firstItem)
@@ -1022,22 +1031,34 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 						newKey := fmt.Sprintf("%s.%s", newParentKey, childKey)
 						newKey = strings.SplitN(newKey, ".", 2)[1]
 
-						//cntItem := modificationList[cnt].(map[string]interface{})
-						//if len(listValue) > 10 {  
-						//	log.Printf("Setting value %#v for key '%s' in modificationList[%d]", listValue, newKey, cnt)
-						//}
-
-						log.Printf("Listvalue to put in index '%d': %#v", childIndex, listValue)
 						newModList := modificationList[cnt].(map[string]interface{})
+						marshalledMap, err := json.Marshal(newModList)
+						if err == nil {
+							comparisonString := fmt.Sprintf(`"%s":"schemaless_list[`, newKey)
+							if !strings.Contains(string(marshalledMap), comparisonString) {
+								continue
 
-						newModList, found = setNestedMap(newModList, newKey, listValue)
-						modificationList[cnt] = newModList
-						if !found {
-							if debug { 
-								log.Printf("[ERROR] Schemaless: Could not set nested map for key '%s' with value '%s'. Count: %#v", newKey, listValue, cnt)
 							}
+
+							log.Printf("Listvalue to put '%s' in key '%s': %s", listValue, newKey, string(marshalledMap))
 						}
+
+
+						newModList, _ = setNestedMap(newModList, newKey, listValue)
+						log.Printf("NEW VALUE: %#v", newModList)
+						modificationList[cnt] = newModList
+						updated = true
+						//break
 					}
+
+					// FIXME: Something with parsedValues being overridden
+					// every single time. Prolly in setNestedMap() or something
+					if updated {
+						parsedValues = modificationList[childIndex].(map[string]interface{})
+					}
+
+					marshalled, _ := json.MarshalIndent(modificationList, "", "\t")
+					log.Printf("MARSHALLED (%d): %s.", listDepth, string(marshalled))
 
 					if listDepth > 0 { 
 						// Updates the child & here 
@@ -1056,7 +1077,7 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 							log.Printf("[DEBUG] Potential LOOP issue: KEY TO PUT IN: %#v. '%#v' -> %#v", oldParentKey, parsedValues, modificationList)
 						}
 
-						updated := false
+						updated = false
 						for inputKey, _ := range translatedInput {
 							//FIXME: Need to NOT update the index unless there is a schemaless_list[] in the key in question
 							newMap := translatedInput[inputKey].(map[string]interface{})
@@ -1090,17 +1111,19 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 
 							translatedInput = append(translatedInput, map[string]interface{}{})
 							newMap := translatedInput[len(translatedInput)-1].(map[string]interface{})
-							newMap, found = setNestedMap(newMap, oldParentKey, modificationList)
+							newMap, _ = setNestedMap(newMap, oldParentKey, modificationList)
 							translatedInput[len(translatedInput)-1] = newMap
 						}
 
 						parsedValues = modificationList[childIndex].(map[string]interface{})
 
 					} else {
+						parsedValues = modificationList[childIndex].(map[string]interface{})
+
 						translatedInput = modificationList
 					}
 
-					marshalled, _ := json.MarshalIndent(translatedInput, "", "\t")
+					marshalled, _ = json.MarshalIndent(translatedInput, "", "\t")
 					log.Printf("MARSHALLED (%d): %s.", listDepth, string(marshalled))
 					//translatedInput = modificationList
 
