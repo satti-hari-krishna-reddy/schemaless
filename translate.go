@@ -5,43 +5,43 @@ A package for translating from a JSON input to a standard format using OpenAI's 
 */
 
 import (
-	"fmt"
-	"log"
-	"os"
-	"sort"
-	"time"
-	"errors"
-	"reflect"
-	"strings"
-	"io/ioutil"
-	"math/rand"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 
-    "gopkg.in/yaml.v3"
 	"encoding/base64"
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/google/go-github/v28/github"
 	"github.com/osteele/liquid"
+	openai "github.com/sashabaranov/go-openai"
+	"gopkg.in/yaml.v3"
 
 	"context"
 )
 
-//var chosenModel = "gpt-4-turbo-preview"
+// var chosenModel = "gpt-4-turbo-preview"
 var chosenModel = "gpt-5-mini"
-var maxInputSize = 5000 
+var maxInputSize = 5000
 var debug = os.Getenv("DEBUG") == "true"
 
-func getRootFolder() string { 
+func getRootFolder() string {
 	rootFolder := "files"
 	filepath := os.Getenv("FILE_LOCATION")
 	if len(filepath) > 0 {
 		rootFolder = filepath
-	} 
+	}
 
 	if len(rootFolder) == 0 {
-		filepath = os.Getenv("SHUFFLE_FILE_LOCATION") 
+		filepath = os.Getenv("SHUFFLE_FILE_LOCATION")
 		if len(filepath) > 0 {
 			rootFolder = filepath
 		}
@@ -57,7 +57,6 @@ func getRootFolder() string {
 
 	return rootFolder
 }
-
 
 func SaveQuery(inputStandard, gptTranslated string, shuffleConfig ShuffleConfig) error {
 	if len(shuffleConfig.URL) > 0 {
@@ -81,7 +80,7 @@ func SaveQuery(inputStandard, gptTranslated string, shuffleConfig ShuffleConfig)
 		return err
 	}
 
-	if debug { 
+	if debug {
 		log.Printf("[DEBUG] Schemaless: Translation saved to %s (1)", filename)
 	}
 
@@ -90,13 +89,12 @@ func SaveQuery(inputStandard, gptTranslated string, shuffleConfig ShuffleConfig)
 
 func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleConfig ShuffleConfig) (string, error) {
 
-
 	additionalCondition := fmt.Sprintf("")
 
 	systemMessage := fmt.Sprintf("Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is ```{\"id\": \"The id of the ticket\", \"title\": \"The ticket title\"}```, and the user input is ```{\"key\": \"12345\", \"fields:\": {\"id\": \"1234\", \"summary\": \"The title of the ticket\"}}```, the output should be ```{\"id\": \"key\", \"title\": \"fields.summary\"}. ALWAYS go deeper than the top level of the User Input and choose accurate values like \"fields.id\" instead of just \"fields\" where it fits.```", additionalCondition)
 	// If translation is needed, you may use Liquid.
 
-	if debug { 
+	if debug {
 		log.Printf("[DEBUG] Schemaless: Running GPT (1) with system message: %s", systemMessage)
 	}
 
@@ -117,7 +115,7 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 
 	// 0 - 500ms delay to ensure 50+ queries don't run for the same query at the same time
 	// This ensures we MAY get very few requests instead of a ton of them
-	randomSleeptime := time.Duration(rand.Intn(500)) 
+	randomSleeptime := time.Duration(rand.Intn(500))
 	time.Sleep(randomSleeptime * time.Millisecond)
 
 	cacheKey := fmt.Sprintf("translationquery-%s", md5Query)
@@ -153,7 +151,7 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 		return contentOutput, nil
 	}
 
-	if debug { 
+	if debug {
 		log.Printf("[DEBUG] Schemaless: Running GPT (2) with system message: %s", systemMessage)
 	}
 
@@ -183,6 +181,8 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 						Content: userQuery,
 					},
 				},
+				Temperature:     0,
+				ReasoningEffort: "low",
 			},
 		)
 
@@ -211,7 +211,7 @@ func LiquidTranslate(ctx context.Context, userInput, translatedInput []byte) ([]
 	//template := `<h1>{{ page.title }}</h1>`
 	template := string(translatedInput)
 
-	// UserInput is used for variables - 
+	// UserInput is used for variables -
 	// e.g. : {% if errorCode == null %}1{% else %}2{% endif %}
 	// This means it should look for "errorCode" as a variable
 
@@ -223,11 +223,11 @@ func LiquidTranslate(ctx context.Context, userInput, translatedInput []byte) ([]
 	}
 
 	out, err := engine.ParseAndRenderString(template, bindings)
-	if err != nil { 
+	if err != nil {
 		log.Printf("[ERROR] Schemaless Liquid: Error parsing and rendering template in LiquidTranslate: %v", err)
 	}
 
-	return []byte(out), nil 
+	return []byte(out), nil
 }
 
 func GetStructureFromCache(ctx context.Context, inputKeyToken string) (map[string]interface{}, error) {
@@ -243,7 +243,7 @@ func GetStructureFromCache(ctx context.Context, inputKeyToken string) (map[strin
 
 	// Setting the structure AGAIN to make it not time out
 	cacheData := []byte(returnCache.([]uint8))
-	fixedCache := FixTranslationStructure(string(cacheData)) 
+	fixedCache := FixTranslationStructure(string(cacheData))
 	err = json.Unmarshal([]byte(fixedCache), &returnStructure)
 	if err != nil {
 		log.Printf("[ERROR] Schemaless: Failed to unmarshal from cache key %s: %s. Value: %s", inputKeyTokenMd5, err, cacheData)
@@ -256,7 +256,7 @@ func GetStructureFromCache(ctx context.Context, inputKeyToken string) (map[strin
 		log.Printf("[ERROR] Schemaless: Error setting cache for key %s: %v", inputKeyToken, err)
 	}
 
-	return returnStructure, nil 
+	return returnStructure, nil
 }
 
 func SetStructureCache(ctx context.Context, inputKeyToken string, inputStructure []byte) error {
@@ -273,21 +273,21 @@ func SetStructureCache(ctx context.Context, inputKeyToken string, inputStructure
 	return nil
 }
 
-//https://stackoverflow.com/questions/40737122/convert-yaml-to-json-without-struct
+// https://stackoverflow.com/questions/40737122/convert-yaml-to-json-without-struct
 func YamlToJson(i interface{}) interface{} {
-    switch x := i.(type) {
-    case map[interface{}]interface{}:
-        m2 := map[string]interface{}{}
-        for k, v := range x {
-            m2[k.(string)] = YamlToJson(v)
-        }
-        return m2
-    case []interface{}:
-        for i, v := range x {
-            x[i] = YamlToJson(v)
-        }
-    }
-    return i
+	switch x := i.(type) {
+	case map[interface{}]interface{}:
+		m2 := map[string]interface{}{}
+		for k, v := range x {
+			m2[k.(string)] = YamlToJson(v)
+		}
+		return m2
+	case []interface{}:
+		for i, v := range x {
+			x[i] = YamlToJson(v)
+		}
+	}
+	return i
 }
 
 func RemoveJsonValues(input []byte, depth int64) ([]byte, string, error) {
@@ -310,7 +310,7 @@ func RemoveJsonValues(input []byte, depth int64) ([]byte, string, error) {
 
 	sort.Strings(keys)
 
-	// Iterate over the map[string]interface{} and remove the values 
+	// Iterate over the map[string]interface{} and remove the values
 	for _, k := range keys {
 		if strings.HasSuffix(k, "1") || strings.HasSuffix(k, "2") || strings.HasSuffix(k, "3") || strings.HasSuffix(k, "4") || strings.HasSuffix(k, "5") || strings.HasSuffix(k, "6") || strings.HasSuffix(k, "7") || strings.HasSuffix(k, "8") || strings.HasSuffix(k, "9") || strings.HasSuffix(k, "0") {
 			continue
@@ -448,7 +448,6 @@ func YamlConvert(startValue string) (string, error) {
 	return startValue, nil
 }
 
-
 func FixTranslationStructure(gptTranslated string) string {
 	gptTranslated = strings.TrimSpace(gptTranslated)
 
@@ -465,7 +464,7 @@ func FixTranslationStructure(gptTranslated string) string {
 
 		gptTranslated = strings.TrimSpace(gptTranslated)
 	}
-	
+
 	return gptTranslated
 }
 
@@ -495,7 +494,7 @@ func SaveTranslation(inputStandard, gptTranslated string, shuffleConfig ShuffleC
 		return err
 	}
 
-	if debug { 
+	if debug {
 		log.Printf("[DEBUG] Schemaless: Translation saved to %s (2)", filename)
 	}
 
@@ -526,9 +525,9 @@ func SaveParsedInput(inputStandard string, gptTranslated []byte, shuffleConfig S
 	}
 
 	/*
-	if debug { 
-		log.Printf("[DEBUG] Schemaless: Response keys saved to %s (3)", filename)
-	}
+		if debug {
+			log.Printf("[DEBUG] Schemaless: Response keys saved to %s (3)", filename)
+		}
 	*/
 
 	return nil
@@ -584,11 +583,11 @@ func LoadStandardFromGithub(client github.Client, owner, repo, path, filename st
 	if err != nil {
 		log.Printf("[WARNING] Failed setting cache for getfiles on github '%s': %s", cacheKey, err)
 	}
-  
+
 	return files, nil
 }
 
-func LoadAndSaveStandard(inputStandard string) (error) {
+func LoadAndSaveStandard(inputStandard string) error {
 	client := github.NewClient(nil)
 	owner := "shuffle"
 	repo := "standards"
@@ -603,7 +602,7 @@ func LoadAndSaveStandard(inputStandard string) (error) {
 
 	foundFiles, err := LoadStandardFromGithub(*client, owner, repo, path, inputStandard)
 
-	if debug { 
+	if debug {
 		log.Printf("[DEBUG] Found %d files in Github for standard '%s'", len(foundFiles), inputStandard)
 	}
 
@@ -614,7 +613,7 @@ func LoadAndSaveStandard(inputStandard string) (error) {
 
 	ctx := context.Background()
 	for _, item := range foundFiles {
-		if debug { 
+		if debug {
 			log.Printf("[DEBUG] Found file from Github '%s'", *item.Name)
 		}
 
@@ -671,7 +670,7 @@ func GetStandard(inputStandard string, shuffleConfig ShuffleConfig) ([]byte, err
 
 		log.Printf("[INFO] Done loading standard '%s' from Shuffle's Github standards. Path: %s", inputStandard, filepath)
 
-		// Re-instantiate referece to the file 
+		// Re-instantiate referece to the file
 		jsonFile, err = os.Open(filepath)
 		if err != nil {
 			log.Printf("[ERROR] Schemaless: Error re-opening file %s (5): %v", filepath, err)
@@ -680,7 +679,7 @@ func GetStandard(inputStandard string, shuffleConfig ShuffleConfig) ([]byte, err
 	}
 
 	// Read the file into a byte array
-	byteValue, err  := ioutil.ReadAll(jsonFile)
+	byteValue, err := ioutil.ReadAll(jsonFile)
 	if err != nil {
 		log.Printf("[ERROR] Schemaless: Error reading file %s: %v", filepath, err)
 		return []byte{}, err
@@ -695,7 +694,7 @@ func GetExistingStructure(inputStandard string, shuffleConfig ShuffleConfig) ([]
 		return FindShuffleFile(inputStandard, "translation_output", shuffleConfig)
 	}
 
-	// FIXME: Should we skip this? 
+	// FIXME: Should we skip this?
 	// Is there any reason to load the standard from the file system?
 	//return []byte{}, nil
 
@@ -708,7 +707,7 @@ func GetExistingStructure(inputStandard string, shuffleConfig ShuffleConfig) ([]
 	}
 
 	// Read the file into a byte array
-	byteValue, err  := ioutil.ReadAll(jsonFile)
+	byteValue, err := ioutil.ReadAll(jsonFile)
 	if err != nil {
 		log.Printf("[ERROR] Schemaless: Error reading file %s: %v", filename, err)
 		return []byte{}, err
@@ -725,12 +724,26 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 		key = keys[0]
 	}
 
+	//if len(keys) > 0 {
+	//	keys = keys[1:]
+	//}
+
+	//log.Printf("[DEBUG] depth %d: key '%s', input: %#v", depth, key, input)
+	/*
+	if depth == 0 {
+		fmt.Println("")
+		fmt.Println("")
+	}
+	log.Printf("[DEBUG] depth %d: keys '%#v'", depth, keys)
+	*/
+
 	for k, v := range input {
 		if k != key {
 			continue
 		}
 
-		if len(keys) == 1 {
+		if len(keys) <= 1 {
+
 			// Check if v is nil
 			if v == nil {
 				return "", nil
@@ -743,7 +756,7 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 				} else {
 					return string(b), nil
 				}
-			} else if val, ok := v.([]interface{}); ok { 
+			} else if val, ok := v.([]interface{}); ok {
 				if b, err := json.MarshalIndent(val, "", "\t"); err != nil {
 					return "", err
 				} else {
@@ -755,16 +768,16 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 				return fmt.Sprintf("%v", val), nil
 			} else if val, ok := v.(int); ok {
 				return fmt.Sprintf("%v", val), nil
+			} else if val, ok := v.(int64); ok {
+				return fmt.Sprintf("%v", val), nil
 			} else {
 				return "", fmt.Errorf("Value is not a string or map[string]interface{}, but %#v", reflect.TypeOf(v))
 			}
-
-			return v.(string), nil
 		}
 
 		parsedKey := strings.Join(keys[1:], ".")
 		if mapValue, ok := v.(map[string]interface{}); ok {
-			foundValue, err := recurseFindKey(mapValue, parsedKey, depth + 1)
+			foundValue, err := recurseFindKey(mapValue, parsedKey, depth+1)
 
 			// Some basic error handling for "weird" keys
 			if err != nil {
@@ -772,7 +785,7 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 				if strings.HasPrefix(parsedKey, `"`) && strings.Count(parsedKey, `"`) > 1 {
 					// If the key is wrapped in quotes, remove them
 					parsedKey = strings.ReplaceAll(parsedKey, `"`, "")
-					foundValue, err = recurseFindKey(mapValue, parsedKey, depth + 1)
+					foundValue, err = recurseFindKey(mapValue, parsedKey, depth+1)
 					if err != nil {
 						log.Printf("[ERROR] Schemaless reverse (6): %v", err)
 					} else {
@@ -780,7 +793,7 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 					}
 				}
 
-				//if debug { 
+				//if debug {
 				//	log.Printf("[DEBUG] Schemaless reverse (5): %v", err)
 				//}
 			} else {
@@ -790,7 +803,7 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 			marshalledMap, err := json.MarshalIndent(listValue, "", "\t")
 			if err != nil {
 				log.Printf("[ERROR] Schemaless reverse (11): Error marshalling list value: %v", err)
-			} 
+			}
 
 			// Checks if we are supposed to check the list or not
 			if len(parsedKey) > 0 && string(parsedKey[0]) == "#" {
@@ -812,14 +825,14 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 				for _, item := range listValue {
 					if itemMap, ok := item.(map[string]interface{}); ok {
 						// Recurse into the item
-						foundValue, err := recurseFindKey(itemMap, parsedKey, depth + 1)
+						foundValue, err := recurseFindKey(itemMap, parsedKey, depth+1)
 						if err != nil {
-							if debug { 
+							if debug {
 								//log.Printf("[ERROR] Schemaless reverse (9): %v", err)
 							}
 						} else {
 							// FIXME: Returning one item at a time doesn't work
-							// But returning the whole array means we need to re-construct the same array multiple times over :thinking: 
+							// But returning the whole array means we need to re-construct the same array multiple times over :thinking:
 							itemList = append(itemList, foundValue)
 							//return foundValue, nil
 						}
@@ -837,11 +850,11 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 
 				// This is to do some custom parsing that makes
 				// schemaless["value1", "value2"] into the actual parent
-				// list. This is required 
-				
-				// If we get them recursed with .#.# 
+				// list. This is required
+
+				// If we get them recursed with .#.#
 				if len(marshalled) > 2 {
-					return "schemaless_list"+string(marshalled), nil
+					return "schemaless_list" + string(marshalled), nil
 				} else {
 					return "", nil
 				}
@@ -849,8 +862,19 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 				log.Printf("[WARNING] Schemaless reverse (8): Invalid key '%s' (%#v) found in list: %v. Should be something like '#0' or '#.key'. Not checking the list.", parsedKey, keys, string(marshalledMap))
 			}
 
+			// FIXME: Do these work properly?
+			//} else if stringValue, ok := v.(string); ok {
+			//	log.Printf("[DEBUG] Schemaless reverse (12): Key '%s' found, returning string value: %s", parsedKey, stringValue)
+			//	return stringValue, nil
+			//} else if intValue, ok := v.(int); ok {
+			//	return string(intValue), nil
+			//} else if intValue, ok := v.(int64); ok {
+			//	return string(intValue), nil
+			//} else if floatValue, ok := v.(float64); ok {
+			//	return fmt.Sprintf("%f", floatValue), nil
+
 		} else {
-			log.Printf("[ERROR] Schemaless reverse (7): Key '%s' found, but value is not a map[string]interface{}: %v")
+			log.Printf("\033[31m[ERROR]\033[0m Schemaless reverse (7): Key '%s' found, but value is NOT a map[string]interface{}: %v. VALUE: '%s'", parsedKey, reflect.TypeOf(v), v)
 		}
 	}
 
@@ -874,7 +898,7 @@ func setNestedMap(m map[string]interface{}, path string, value interface{}) (map
 			//	keys[i]: nested,
 			//}
 			continue
-		} 
+		}
 
 		if val, ok := m[keys[i]].(string); ok {
 			if strings.Contains(val, "schemaless_list") {
@@ -926,8 +950,7 @@ func deepMerge(dst, src map[string]interface{}) map[string]interface{} {
 	return dst
 }
 
-
-//func handleMultiListItems(translatedInput map[string]interface{}, jsonKey, translationKey string, loopedValue string) map[string]interface{} { 
+//func handleMultiListItems(translatedInput map[string]interface{}, jsonKey, translationKey string, loopedValue string) map[string]interface{} {
 
 // This function wouldn't be necessary if other recursion functions
 // also have this capability themselves
@@ -935,13 +958,13 @@ func deepMerge(dst, src map[string]interface{}) map[string]interface{} {
 // translatedInput = the parent object to modify. It is actually the parent of the parents' object.
 // jsonKey = the key in the parent object WHICH IS A LIST
 // parsedValues = the child values from where we have the list
-func handleMultiListItems(translatedInput []interface{}, parentKey string, parsedValues map[string]interface{}, listDepth, childIndex int) ([]interface{}) { 
+func handleMultiListItems(translatedInput []interface{}, parentKey string, parsedValues map[string]interface{}, listDepth, childIndex int) []interface{} {
 	if !strings.Contains(parentKey, ".") && len(translatedInput) == 0 {
 		translatedInput = append(translatedInput, parsedValues)
 	}
 
 	// Start recursing to find the valid keys
-	// Checks: 
+	// Checks:
 	// list -> subsub
 	// maps -> childkeys
 	// strings -> build it out.
@@ -956,20 +979,19 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 		if val, ok := v.(map[string]interface{}); ok {
 			// By passing in translatedInput we allow child objects to modify the parent?
 			newKey := fmt.Sprintf("%s.%s", parentKey, childKey)
-			translatedInput = handleMultiListItems(translatedInput, newKey, val, listDepth, childIndex) 
+			translatedInput = handleMultiListItems(translatedInput, newKey, val, listDepth, childIndex)
 
 		} else if val, ok := v.([]interface{}); ok {
 			newKey := fmt.Sprintf("%s.%s.#", parentKey, childKey)
 
 			// FIXME: Re-enable this for sub-lists
 			for cnt, subItem := range val {
-				if parsedSubitem, ok := subItem.(map[string]interface{}); ok { 
+				if parsedSubitem, ok := subItem.(map[string]interface{}); ok {
 					translatedInput = handleMultiListItems(translatedInput, newKey, parsedSubitem, listDepth+1, cnt)
 				} else {
 					log.Printf("[ERROR] Schemaless: List item '%s' in key '%s' is not a map[string]interface{}, but %T. This is not handled yet (1).", childKey, parentKey, subItem)
 				}
 			}
-
 
 		} else if val, ok := v.(string); ok {
 			if strings.Contains(val, "schemaless_list[") {
@@ -1001,13 +1023,13 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 							if part == "#" {
 								counter += 1
 
-								if cnt > 0 { 
+								if cnt > 0 {
 									newKeySplit = append(newKeySplit, parentKeySplit[cnt-1])
 								}
 							}
 
 							if counter-1 == listDepth {
-								newKeySplit = append(newKeySplit, part) 
+								newKeySplit = append(newKeySplit, part)
 							}
 						}
 
@@ -1026,7 +1048,6 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 							modificationList = append(modificationList, firstItem)
 						}
 
-
 						// Update the translatedInput with the new value
 						newKey := fmt.Sprintf("%s.%s", newParentKey, childKey)
 						newKey = strings.SplitN(newKey, ".", 2)[1]
@@ -1042,7 +1063,6 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 
 							log.Printf("Listvalue to put '%s' in key '%s': %s", listValue, newKey, string(marshalledMap))
 						}
-
 
 						newModList, _ = setNestedMap(newModList, newKey, listValue)
 						log.Printf("NEW VALUE: %#v", newModList)
@@ -1060,20 +1080,19 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 					marshalled, _ := json.MarshalIndent(modificationList, "", "\t")
 					log.Printf("MARSHALLED (%d): %s.", listDepth, string(marshalled))
 
-					if listDepth > 0 { 
-						// Updates the child & here 
+					if listDepth > 0 {
+						// Updates the child & here
 						// This shit also needs recursion.. gahh
-						if debug { 
+						if debug {
 							log.Printf("UPDATING CHILD LOOP INDEX %#v", childIndex)
 						}
-
 
 						// And it needs to automatically find the right one
 						if strings.HasPrefix(oldParentKey, ".") {
 							oldParentKey = strings.Trim(oldParentKey, ".")
 						}
 
-						if debug { 
+						if debug {
 							log.Printf("[DEBUG] Potential LOOP issue: KEY TO PUT IN: %#v. '%#v' -> %#v", oldParentKey, parsedValues, modificationList)
 						}
 
@@ -1105,7 +1124,7 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 						}
 
 						if !updated {
-							if debug { 
+							if debug {
 								log.Printf("[DEBUG] Appended new index to parent list as it wasn't found, but needed.")
 							}
 
@@ -1159,7 +1178,7 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 	for translationKey, translationValue := range translation {
 		// Find the field in the parsedInput
 		found := false
-		for inputKey, inputValue:= range parsedInput {
+		for inputKey, inputValue := range parsedInput {
 			if inputKey != translationValue {
 				continue
 			}
@@ -1169,13 +1188,13 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 			// Add the translated field to the translatedInput
 			translatedInput[translationKey] = inputValue
-			found = true 
+			found = true
 		}
 
 		if !found {
 			// Skipping (for now?)
 			if _, ok := translationValue.(float64); ok {
-				if debug { 
+				if debug {
 					log.Printf("[DEBUG] NOT handling float/integer translations and keeping value instead. Key: %s, Value: %v", translationKey, translationValue)
 				}
 
@@ -1185,14 +1204,14 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				newOutput := []interface{}{}
 
 				// The list part here doesn't really work as this is checking the length of the list in the STANDARD - NOT in the value from the user
-				// This makes it so that the append really does... nothing 
+				// This makes it so that the append really does... nothing
 				for _, v := range val {
 					if _, ok := v.(map[string]interface{}); !ok {
 
 						if stringVal, stringValOk := v.(string); stringValOk {
 							stringKey := stringVal
 							if strings.Contains(stringKey, "[]") {
-							stringKey = strings.ReplaceAll(stringKey, "[]", ".#")
+								stringKey = strings.ReplaceAll(stringKey, "[]", ".#")
 							}
 
 							if strings.Contains(stringKey, `"`) {
@@ -1200,9 +1219,9 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 							}
 
 							recursed, err := recurseFindKey(parsedInput, stringKey, 0)
-							if err == nil { 
+							if err == nil {
 								translationValue = []string{recursed}
-							}  else {
+							} else {
 								log.Printf("[ERROR] Schemaless: Error in RecurseFindKey for key string '%s': %v", translationKey, err)
 								translationValue = []string{}
 
@@ -1246,7 +1265,7 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 					err = json.Unmarshal(output, &outputParsed)
 					if err != nil {
 						log.Printf("[ERROR] Schemaless: Error in unmarshalling output for key '%s': %v", translationKey, err)
-						
+
 						translatedInput[translationKey] = translationValue
 						continue
 					}
@@ -1266,10 +1285,10 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				}
 
 				if len(newOutput) > 0 {
-					
+
 					translatedInput[translationKey] = newOutput
 				} else {
-					//if debug { 
+					//if debug {
 					//	log.Printf("[ERROR] Schemaless DEBUG issue: No output found for key '%s' after translation. This COULD be working as intended.", translationKey)
 					//}
 
@@ -1277,7 +1296,6 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				}
 
 			} else if val, ok := translationValue.(map[string]interface{}); ok {
-
 				// Recurse it with the same function again
 				translation, _, err := runJsonTranslation(ctx, inputValue, val)
 				if err != nil {
@@ -1305,10 +1323,11 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 				translatedInput[translationKey] = translationValueParsed
 
-
 			} else if val, ok := translationValue.(string); ok {
 				if strings.Contains(val, ".") {
-					//log.Printf("[DEBUG] Schemaless: Digging deeper to find field %#v in input", translationValue)
+					//if debug { 
+					//	log.Printf("[DEBUG] Schemaless: Digging deeper to find field %#v in input", translationValue)
+					//}
 
 					// Check for ends with item.value[] <- array
 					// This can't be handled properly without being something like .# or .#0
@@ -1323,12 +1342,11 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 					recursed, err := recurseFindKey(parsedInput, key, 0)
 					if err != nil {
-						if debug { 
+						if debug {
 							log.Printf("[DEBUG] Schemaless Reverse problem: Error in RecurseFindKey for %#v: %v", key, err)
 						}
 					}
 
-					modifiedParsedInput[translationKey] = recursed
 					translatedInput[translationKey] = recursed
 				} else {
 					translatedInput[translationKey] = val
@@ -1352,7 +1370,7 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 	modifiedOutput, err := json.MarshalIndent(modifiedParsedInput, "", "\t")
 	if err != nil {
 		log.Printf("[ERROR] Schemaless: Error in modifiedParsedInput marshal: %v", err)
-		return translatedOutput, []byte{}, err 
+		return translatedOutput, []byte{}, err
 	}
 
 	return translatedOutput, modifiedOutput, nil
@@ -1364,7 +1382,7 @@ func fixPaths() {
 	for _, folder := range folders {
 		folderpath := fmt.Sprintf("%s%s", getRootFolder(), folder)
 		if _, err := os.Stat(folderpath); os.IsNotExist(err) {
-			if debug { 
+			if debug {
 				log.Printf("[DEBUG] Schemaless: Folder '%s' does not exist, creating it", folderpath)
 			}
 
@@ -1387,7 +1405,7 @@ func handleSubStandard(ctx context.Context, subStandard string, returnJson strin
 	listJson := []interface{}{}
 	err := json.Unmarshal([]byte(returnJson), &listJson)
 	if err != nil {
-		if !strings.Contains(fmt.Sprintf("%v", err), "cannot unmarshal") { 
+		if !strings.Contains(fmt.Sprintf("%v", err), "cannot unmarshal") {
 			log.Printf("[ERROR] Schemaless: Error in unmarshal of returnJson in sub to a direct list: %v", err)
 		}
 
@@ -1418,7 +1436,7 @@ func handleSubStandard(ctx context.Context, subStandard string, returnJson strin
 	// For each item in the list, translate it to the substandard
 	// Maybe do this with recursive Translate() calls?
 
-	skipAfterCount := 50 
+	skipAfterCount := 50
 	var wg sync.WaitGroup
 	var mu sync.Mutex // Mutex to safely access parsedOutput slice
 
@@ -1441,7 +1459,6 @@ func handleSubStandard(ctx context.Context, subStandard string, returnJson strin
 			parsedOutput = append(parsedOutput, schemalessOutput)
 			continue
 		}
-
 
 		wg.Add(1) // Increment the wait group counter for each goroutine
 		go func(cnt int, listItem interface{}) {
@@ -1513,14 +1530,14 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 		}
 	}
 
-	// FIXME: May not be important anymore 
+	// FIXME: May not be important anymore
 	// This prevents recursion inside a JSON blob
 	// in case file reference is bad
 
 	// Reference key addition is a way the user can send in a key to add to the filename, as to make it unique and configurable, even with the same input/output from the actual translation
 	skipSubstandard := false
 	filenamePrefix := ""
-	for _, input := range inputConfig { 
+	for _, input := range inputConfig {
 		if input == "skip_substandard" {
 			skipSubstandard = true
 			break
@@ -1541,7 +1558,7 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 
 	// Doesn't handle list inputs in json
 	startValue := strings.TrimSpace(string(inputValue))
-	if !strings.HasPrefix(startValue, "{") || !strings.HasSuffix(startValue, "}") { 
+	if !strings.HasPrefix(startValue, "{") || !strings.HasSuffix(startValue, "}") {
 		output, err := YamlConvert(startValue)
 		if err != nil {
 			log.Printf("[ERROR] Schemaless bad prefix (1): %v", err)
@@ -1569,13 +1586,17 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	}
 
 	// Check if the keyToken is already in cache and use that translation layer
-	//log.Printf("\n\n[DEBUG] Schemaless: Getting existing structure for keyToken: '%s'\n\n", keyTokenFile)
-	inputStructure, err := GetExistingStructure(keyTokenFile, shuffleConfig)
+	if debug {
+		log.Printf("[DEBUG] Schemaless: Getting existing structure for keyToken: '%s'", keyTokenFile)
+	}
 
+	inputStructure, inputStructErr := GetExistingStructure(keyTokenFile, shuffleConfig)
 	fixedOutput := FixTranslationStructure(string(inputStructure))
 	inputStructure = []byte(fixedOutput)
-	if err == nil {
-		//log.Printf("\n\n[DEBUG] Schemaless: Found existing structure for keyToken: '%s': %#v\n\n", keyTokenFile, string(inputStructure))
+	if inputStructErr == nil {
+		if debug {
+			//log.Printf("[DEBUG] Schemaless: Found existing structure for keyToken: '%s': %s", keyTokenFile, string(inputStructure))
+		}
 	} else {
 		// Check if the standard exists at all
 		standardFormat, err := GetStandard(inputStandard, shuffleConfig)
@@ -1637,14 +1658,14 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 		if err != nil {
 			log.Printf("[ERROR] Schemaless: Problem in SaveTranslation (3): %v", err)
 			return []byte{}, err
-		} 
+		}
 
 		//log.Printf("[DEBUG] Saved GPT translation to file. Should now run OpenAI and set cache!")
 		inputStructure = []byte(gptTranslated)
 	}
 
 	// FIXME: Why was this cache stuff implemented? This is confusing AF
-	err = SetStructureCache(ctx, keyToken, inputStructure) 
+	err = SetStructureCache(ctx, keyToken, inputStructure)
 	if err != nil {
 		log.Printf("[ERROR] Schemaless: problem in SetStructureCache for keyToken %#v with inputStructure %#v: %v", keyToken, inputStructure, err)
 		return []byte{}, err
@@ -1656,13 +1677,20 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 		return []byte{}, err
 	}
 
+	//marshalledReturn, err := json.MarshalIndent(returnStructure, "", "\t")
+	//if err == nil {
+	//	log.Printf("MarshalledRet: %s", string(marshalledReturn))
+	//}
 	//log.Printf("[DEBUG] Structure received: %v", returnStructure)
-
+	//log.Printf("Startvalue (len(%d)): %s", len(startValue), string(startValue))
 	translation, modifiedInput, err := runJsonTranslation(ctx, []byte(startValue), returnStructure)
 	if err != nil {
 		log.Printf("[ERROR] Error in runJsonTranslation: %v", err)
 		return []byte{}, err
-	}  
+	}
+
+	//log.Printf("[DEBUG] Schemaless: Final translation output: %s", string(translation))
+	//os.Exit(3)
 
 	_ = modifiedInput
 	//log.Printf("translation: %v", string(translation))
@@ -1671,8 +1699,8 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	return translation, nil
 }
 
-func init() { 
-	if os.Getenv("DEBUG") == "true" { 
+func init() {
+	if os.Getenv("DEBUG") == "true" {
 		debug = true
 	}
 
@@ -1683,14 +1711,11 @@ func init() {
 	}
 }
 
-
-
-
 //func main() {
 //
 //	/*
-//	startValue := `Services: 
-//-   Orders: 
+//	startValue := `Services:
+//-   Orders:
 //    -   ID: $save ID1
 //        SupplierOrderCode: $SupplierOrderCode
 //    -   ID: $save ID2
