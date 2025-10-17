@@ -14,11 +14,11 @@ import (
 	"math/rand"
 	"os"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"regexp"
 
 	"encoding/base64"
 	"gopkg.in/yaml.v3"
@@ -59,6 +59,8 @@ func getRootFolder() string {
 	return rootFolder
 }
 
+
+
 func SaveQuery(inputStandard, gptTranslated string, shuffleConfig ShuffleConfig) error {
 	if len(shuffleConfig.URL) > 0 {
 		//return nil
@@ -95,8 +97,10 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 	systemMessage := fmt.Sprintf(`Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is '{"id": "The id of the ticket", "title": "The ticket title"}', and the user input is '{"key": "12345", "fields:": {"id": "1234", "summary": "The title of the ticket"}}', the output should be '{"id": "key", "title": "fields.summary"}'. ALWAYS go deeper than the top level of the User Input and choose accurate values like "fields.id" instead of just "fields" where it fits.
 
 Additional formatting rules:
+- jq formatting for loops is ok
 - Add a dollar sign in front of every translation: $key.subkey.subsubkey
 - If it makes sense, you can add multiple variables in the middle of descriptive text such as 'The ticket $data.id with title $data.title has been created'
+- If the type is an Array, make it an actual JSON array with all the relevant keys. Example: Array type 'firstname & lastname' becomes [{"firstname": "$data[].firstname", "lastname": "$data[].lastname"}]
 `, additionalCondition)
 	// If translation is needed, you may use Liquid.
 
@@ -234,6 +238,105 @@ func LiquidTranslate(ctx context.Context, userInput, translatedInput []byte) ([]
 	}
 
 	return []byte(out), nil
+}
+
+type Valuereplace struct {
+	Key   string `json:"key" datastore:"key" yaml:"key"`
+	Value string `json:"value" datastore:"value,noindex" yaml:"value"`
+
+	// Used for e.g. user input storage
+	Answer string `json:"answer,omitempty" datastore:"answer,noindex" yaml:"answer,omitempty"`
+}
+
+// Fixes potential decision return or reference problems:
+// {{list_tickets}} -> $list_tickets
+// {{list_tickets[0].description}} -> $list_tickets.#0.description
+// {{ticket.description}} -> $ticket.description
+func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Valuereplace {
+	skipLiquidCheck := false
+	if len(skipLiquid) > 0 && skipLiquid[0] {
+		skipLiquidCheck = true
+	}
+
+	for fieldIndex, _ := range fields {
+		field := fields[fieldIndex]
+		if !skipLiquidCheck && (!strings.Contains(field.Value, "{{") || !strings.Contains(field.Value, "}}")) {
+			log.Printf("[DEBUG] Schemaless: No Liquid format found in field value '%s', skipping.", field.Value)
+			continue
+		}
+
+		// App SDK pattern
+		//matchPattern := `([$]{1}([a-zA-Z0-9_@-]+\.?){1}([a-zA-Z0-9#_@-]+\.?){0,})`
+
+		// Used for testing
+		re := regexp.MustCompile(`{{\s*([a-zA-Z0-9_\.]+)(\[[0-9]*\])?(\.[a-zA-Z0-9_]+)?\s*}}`)
+		if skipLiquidCheck {
+			//re = regexp.MustCompile(`\s*([a-zA-Z0-9_\.]+)(\[[0-9]*\])?(\.[a-zA-Z0-9_]+)?\s*`)
+		}
+
+		matches := re.FindAllStringSubmatch(field.Value, -1)
+		if len(matches) == 0 {
+			continue
+		}
+
+		stringBuild := "$"
+		for _, match := range matches {
+			log.Printf("MATCH: %#v", match)
+
+			for i, matchValue := range match {
+				if i == 0 {
+					continue
+				}
+
+				if i != 1 {
+					if len(matchValue) > 0 && !strings.HasPrefix(matchValue, ".") {
+						stringBuild += "."
+					}
+				}
+
+				if strings.HasPrefix(matchValue, "[") && strings.HasSuffix(matchValue, "]") {
+					// Find the formats:
+					// [] -> #
+					// [:] -> #
+					// [0] -> #0
+					// [0:1] -> #0-1
+					// [0:] -> #0-max
+					if matchValue == "[]" || matchValue == "[:]" {
+						stringBuild += "#"
+					} else if strings.Contains(matchValue, ":") {
+						parts := strings.Split(matchValue, ":")
+						if len(parts) == 2 {
+							stringBuild += fmt.Sprintf("#%s-%s", parts[0], parts[1])
+						} else {
+							stringBuild += fmt.Sprintf("#%s-max", parts[0])
+						}
+
+						stringBuild += fmt.Sprintf("#%s", matchValue)
+					} else {
+						// Remove the brackets
+						matchValue = strings.ReplaceAll(matchValue, "[", "")
+						matchValue = strings.ReplaceAll(matchValue, "]", "")
+						stringBuild += fmt.Sprintf("#%s", matchValue)
+					}
+
+					continue
+				}
+
+				stringBuild += matchValue
+			}
+
+			log.Printf("VALUE: %#v", field.Value)
+			if len(match) > 1 {
+				field.Value = strings.ReplaceAll(field.Value, match[0], stringBuild)
+				fields[fieldIndex].Value = field.Value
+				//log.Printf("VALUE: %#v", field.Value)
+			}
+
+			stringBuild = "$"
+		}
+	}
+
+	return fields
 }
 
 func GetStructureFromCache(ctx context.Context, inputKeyToken string) (map[string]interface{}, error) {
@@ -811,6 +914,7 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 				log.Printf("[ERROR] Schemaless reverse (11): Error marshalling list value: %v", err)
 			}
 
+
 			// Checks if we are supposed to check the list or not
 			if len(parsedKey) > 0 && string(parsedKey[0]) == "#" {
 				// Trim until first dot (.)
@@ -860,7 +964,8 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 
 				// If we get them recursed with .#.#
 				if len(marshalled) > 2 {
-					return "schemaless_list" + string(marshalled), nil
+					toReturn := fmt.Sprintf("schemaless_list%s", string(marshalled))
+					return toReturn, nil
 				} else {
 					return "", nil
 				}
@@ -976,12 +1081,17 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 	// strings -> build it out.
 	//for childKey, v := range parsedValues {
 
-	log.Printf("\n\n\nSTARTING NEW LIST\n\n\n")
+	if debug { 
+		log.Printf("\n\n[DEBUG] STARTING NEW LIST\n\n")
+	}
+
 	newParsedValues := parsedValues
 	for childKey, _ := range newParsedValues {
-		log.Printf("\n\nCHILDKEY START (%d): %#v\n\n", childIndex, childKey)
-		v := parsedValues[childKey]
+		if debug { 
+			log.Printf("[DEBUG] CHILDKEY START (%d): %#v", childIndex, childKey)
+		}
 
+		v := parsedValues[childKey]
 		if val, ok := v.(map[string]interface{}); ok {
 			// By passing in translatedInput we allow child objects to modify the parent?
 			newKey := fmt.Sprintf("%s.%s", parentKey, childKey)
@@ -1000,17 +1110,48 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 			}
 
 		} else if val, ok := v.(string); ok {
+
+			// Handle list expansion
 			if strings.Contains(val, "schemaless_list[") {
-				//if val == "schemaless_list[]" || val == "schemaless_list" {
-				//}
 
 				foundList := strings.Split(val, "schemaless_list")
 				if len(foundList) >= 2 {
 
 					// Somehow ALWAYS look for the first INNER list
 					// This makes it so that extrapolation can be done well across all fields everywhere
-
 					matchingList := strings.Join(foundList[1:], "schemaless_list")
+					newListStr := ""
+
+					recording := false
+					bracketCount := 0
+					for _, matchChar := range matchingList {
+						if matchChar == '[' {
+							recording = true
+							bracketCount += 1
+							if bracketCount == 1 {
+								//continue
+							}
+						}
+
+						if recording {
+							newListStr += string(matchChar)
+						}
+
+						if matchChar == ']' {
+							bracketCount -= 1
+							if bracketCount == 0 {
+								recording = false
+								break
+							}
+						}
+
+						
+					}
+
+					if strings.HasPrefix(newListStr, "[") && strings.HasSuffix(newListStr, "]") {
+						matchingList = newListStr
+					}
+
 					unmarshalledList := []string{}
 					err := json.Unmarshal([]byte(matchingList), &unmarshalledList)
 					if err != nil {
@@ -1061,17 +1202,30 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 						newModList := modificationList[cnt].(map[string]interface{})
 						marshalledMap, err := json.Marshal(newModList)
 						if err == nil {
-							comparisonString := fmt.Sprintf(`"%s":"schemaless_list[`, newKey)
-							if !strings.Contains(string(marshalledMap), comparisonString) {
-								continue
+							// FIXME: This part is going wrong with additional items in there
+							//comparisonString := fmt.Sprintf(`"%s":"schemaless_list[`, newKey)
+							//if !strings.Contains(string(marshalledMap), comparisonString) {
 
+							if strings.Contains(string(marshalledMap), fmt.Sprintf(`"%s":"`, newKey)) && strings.Contains(string(marshalledMap), `schemaless_list[`) { 
+								// Replace the schemaless_list[...] part with the listValue
+								listValue = strings.Replace(val, fmt.Sprintf("schemaless_list%s", matchingList), listValue, 1)
+
+							} else {
+								continue
 							}
 
-							log.Printf("Listvalue to put '%s' in key '%s': %s", listValue, newKey, string(marshalledMap))
+							if debug { 
+								log.Printf("[DEBUG] Listvalue to put '%s' in key '%s': %s", listValue, newKey, string(marshalledMap))
+							}
+						} else {
+							log.Printf("[ERROR] Schemaless: Error marshalling map during list handling: %v", err)
 						}
 
 						newModList, _ = setNestedMap(newModList, newKey, listValue)
-						log.Printf("NEW VALUE: %#v", newModList)
+						if debug { 
+							log.Printf("[DEBUG] NEW VALUE: %#v", newModList)
+						}
+
 						modificationList[cnt] = newModList
 						updated = true
 						//break
@@ -1084,7 +1238,9 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 					}
 
 					marshalled, _ := json.MarshalIndent(modificationList, "", "\t")
-					log.Printf("MARSHALLED (%d): %s.", listDepth, string(marshalled))
+					if debug { 
+						log.Printf("[DEBUG] MARSHALLED (%d): %s.", listDepth, string(marshalled))
+					}
 
 					if listDepth > 0 {
 						// Updates the child & here
@@ -1276,7 +1432,6 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 						continue
 					}
 
-					// Runs an actual translation
 					output, _, err := runJsonTranslation(ctx, inputValue, newValue)
 					if err != nil {
 						log.Printf("[ERROR] Schemaless: Error in runJsonTranslation for key '%s': %v", translationKey, err)
@@ -1298,6 +1453,10 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 					// Hard to optimise for subkeys -> parent control tho
 					if strings.Contains(string(output), "schemaless_list[") {
 						//newTranslatedInput := handleMultiListItems(newOutput, translationKey, outputParsed)
+						if debug {
+							log.Printf("\n\n\nLIST: %s\n\n\n", string(output))
+						}
+
 						newTranslatedInput := handleMultiListItems(newOutput, "", outputParsed, 0, 0)
 						translationValue = newTranslatedInput
 
@@ -1347,7 +1506,21 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				translatedInput[translationKey] = translationValueParsed
 
 			} else if val, ok := translationValue.(string); ok {
-				log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
+				//log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
+
+				// Basic, default translator
+				if strings.Contains(val, "[") { 
+					fields := []Valuereplace{
+						Valuereplace{
+							Value: val,
+						},
+					}
+
+					fields = TranslateBadFieldFormats(fields, true) 
+					if len(fields) == 1 {
+						val = fields[0].Value
+					}
+				}
 
 				if strings.Contains(val, ".") {
 					//if debug {
@@ -1379,6 +1552,11 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 							recursed, err := recurseFindKey(parsedInput, newParsedMatch, 0)
 							if err != nil {
 								log.Printf("[ERROR] Schemaless: Error in RecurseFindKey for match %#v: %v", match, err)
+							}
+
+							newOutput = strings.ReplaceAll(newOutput, match, recursed)
+							if strings.Contains(match, ".#") {
+								match = strings.ReplaceAll(match, ".#", "[]")
 							}
 
 							newOutput = strings.ReplaceAll(newOutput, match, recursed)
