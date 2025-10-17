@@ -1368,17 +1368,12 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 					// Specific parser for $
 					if strings.Contains(val, "$") {
 						newOutput := val
-						if debug {
-							log.Printf("Input has dollar sign ($) in it - this might cause issues with parsing: %#v", val)
-						}
 
-						// From app sdk
+						// From app sdk => Same format.
 						matchPattern := `([$]{1}([a-zA-Z0-9_@-]+\.?){1}([a-zA-Z0-9#_@-]+\.?){0,})`
 						re := regexp.MustCompile(matchPattern)
 						// Find all occurrences
 						matches := re.FindAllString(key, -1)
-						log.Printf("Matches: %#v", matches)
-
 						for _, match := range matches {
 							newParsedMatch := getParsedMatch(match)
 							recursed, err := recurseFindKey(parsedInput, newParsedMatch, 0)
