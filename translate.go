@@ -14,16 +14,17 @@ import (
 	"math/rand"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"encoding/base64"
-	"github.com/google/go-github/v28/github"
-	"github.com/osteele/liquid"
-	openai "github.com/sashabaranov/go-openai"
 	"gopkg.in/yaml.v3"
+	"github.com/osteele/liquid"
+	"github.com/google/go-github/v28/github"
+	openai "github.com/sashabaranov/go-openai"
 
 	"context"
 )
@@ -91,7 +92,12 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 
 	additionalCondition := fmt.Sprintf("")
 
-	systemMessage := fmt.Sprintf("Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is ```{\"id\": \"The id of the ticket\", \"title\": \"The ticket title\"}```, and the user input is ```{\"key\": \"12345\", \"fields:\": {\"id\": \"1234\", \"summary\": \"The title of the ticket\"}}```, the output should be ```{\"id\": \"key\", \"title\": \"fields.summary\"}. ALWAYS go deeper than the top level of the User Input and choose accurate values like \"fields.id\" instead of just \"fields\" where it fits.```", additionalCondition)
+	systemMessage := fmt.Sprintf(`Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is '{"id": "The id of the ticket", "title": "The ticket title"}', and the user input is '{"key": "12345", "fields:": {"id": "1234", "summary": "The title of the ticket"}}', the output should be '{"id": "key", "title": "fields.summary"}'. ALWAYS go deeper than the top level of the User Input and choose accurate values like "fields.id" instead of just "fields" where it fits.
+
+Additional formatting rules:
+- Add a dollar sign in front of every translation: $key.subkey.subsubkey
+- If it makes sense, you can add multiple variables in the middle of descriptive text such as 'The ticket $data.id with title $data.title has been created'
+`, additionalCondition)
 	// If translation is needed, you may use Liquid.
 
 	if debug {
@@ -730,11 +736,11 @@ func recurseFindKey(input map[string]interface{}, key string, depth int) (string
 
 	//log.Printf("[DEBUG] depth %d: key '%s', input: %#v", depth, key, input)
 	/*
-	if depth == 0 {
-		fmt.Println("")
-		fmt.Println("")
-	}
-	log.Printf("[DEBUG] depth %d: keys '%#v'", depth, keys)
+		if depth == 0 {
+			fmt.Println("")
+			fmt.Println("")
+		}
+		log.Printf("[DEBUG] depth %d: keys '%#v'", depth, keys)
 	*/
 
 	for k, v := range input {
@@ -1159,7 +1165,20 @@ func handleMultiListItems(translatedInput []interface{}, parentKey string, parse
 	return translatedInput
 }
 
-func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[string]interface{}) ([]byte, []byte, error) {
+func getParsedMatch(match string) string {
+	match = strings.TrimSpace(match)
+	if strings.HasPrefix(match, "$") {
+		match = strings.TrimPrefix(match, "$")
+	}
+
+	if strings.HasSuffix(match, ".") {
+		match = strings.TrimSuffix(match, ".")
+	}
+
+	return match
+}
+
+func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[string]interface{}, keepOriginal ...bool) ([]byte, []byte, error) {
 	//log.Printf("Should translate %s based on %s", string(inputValue), translation)
 
 	// Unmarshal the byte back into a map[string]interface{}
@@ -1175,6 +1194,10 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 	// Creating a new map to store the translated values
 	translatedInput := make(map[string]interface{})
+	if len(keepOriginal) > 0 && keepOriginal[0] == true {
+		translatedInput["unmapped"] = parsedInput
+	}
+
 	for translationKey, translationValue := range translation {
 		// Find the field in the parsedInput
 		found := false
@@ -1324,8 +1347,10 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				translatedInput[translationKey] = translationValueParsed
 
 			} else if val, ok := translationValue.(string); ok {
+				log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
+
 				if strings.Contains(val, ".") {
-					//if debug { 
+					//if debug {
 					//	log.Printf("[DEBUG] Schemaless: Digging deeper to find field %#v in input", translationValue)
 					//}
 
@@ -1340,14 +1365,41 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 						key = strings.ReplaceAll(key, `"`, "")
 					}
 
-					recursed, err := recurseFindKey(parsedInput, key, 0)
-					if err != nil {
+					// Specific parser for $
+					if strings.Contains(val, "$") {
+						newOutput := val
 						if debug {
-							log.Printf("[DEBUG] Schemaless Reverse problem: Error in RecurseFindKey for %#v: %v", key, err)
+							log.Printf("Input has dollar sign ($) in it - this might cause issues with parsing: %#v", val)
 						}
-					}
 
-					translatedInput[translationKey] = recursed
+						// From app sdk
+						matchPattern := `([$]{1}([a-zA-Z0-9_@-]+\.?){1}([a-zA-Z0-9#_@-]+\.?){0,})`
+						re := regexp.MustCompile(matchPattern)
+						// Find all occurrences
+						matches := re.FindAllString(key, -1)
+						log.Printf("Matches: %#v", matches)
+
+						for _, match := range matches {
+							newParsedMatch := getParsedMatch(match)
+							recursed, err := recurseFindKey(parsedInput, newParsedMatch, 0)
+							if err != nil {
+								log.Printf("[ERROR] Schemaless: Error in RecurseFindKey for match %#v: %v", match, err)
+							}
+
+							newOutput = strings.ReplaceAll(newOutput, match, recursed)
+						}
+
+						translatedInput[translationKey] = newOutput 
+					} else {
+						recursed, err := recurseFindKey(parsedInput, key, 0)
+						if err != nil {
+							if debug {
+								log.Printf("[DEBUG] Schemaless Reverse problem: Error in RecurseFindKey for %#v: %v", key, err)
+							}
+						}
+
+						translatedInput[translationKey] = recursed
+					}
 				} else {
 					translatedInput[translationKey] = val
 				}
@@ -1508,24 +1560,31 @@ func handleSubStandard(ctx context.Context, subStandard string, returnJson strin
 func Translate(ctx context.Context, inputStandard string, inputValue []byte, inputConfig ...string) ([]byte, error) {
 
 	// shuffleConfig is an overwrite we can use. Contains in first item with comma separation in order:
+	// keepOriginal (keep unstructured in blob)
 	// URL
 	// Authorization
 	// OrgId
+	// ExecutionId
 
 	shuffleConfig := ShuffleConfig{}
+
+	keepOriginal := false
 	if len(inputConfig) > 0 {
 		parsedInput := strings.Split(inputConfig[0], ",")
 		for cnt, config := range parsedInput {
 			if cnt == 0 {
-				shuffleConfig.URL = config
+				keepOriginal = (config == "true" || config == "1" || config == "yes")
 			} else if cnt == 1 {
-				shuffleConfig.Authorization = config
+				shuffleConfig.URL = config
 			} else if cnt == 2 {
-				shuffleConfig.OrgId = config
+				shuffleConfig.Authorization = config
 			} else if cnt == 3 {
+				shuffleConfig.OrgId = config
+			} else if cnt == 4 {
 				shuffleConfig.ExecutionId = config
 			} else {
-				log.Printf("[ERROR] Schemaless: Too many arguments for shuffleConfig")
+				log.Printf("[ERROR] Schemaless: Too many arguments for shuffleConfig (%d)", len(parsedInput))
+				break
 			}
 		}
 	}
@@ -1683,7 +1742,7 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	//}
 	//log.Printf("[DEBUG] Structure received: %v", returnStructure)
 	//log.Printf("Startvalue (len(%d)): %s", len(startValue), string(startValue))
-	translation, modifiedInput, err := runJsonTranslation(ctx, []byte(startValue), returnStructure)
+	translation, modifiedInput, err := runJsonTranslation(ctx, []byte(startValue), returnStructure, keepOriginal)
 	if err != nil {
 		log.Printf("[ERROR] Error in runJsonTranslation: %v", err)
 		return []byte{}, err
