@@ -261,7 +261,7 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 	for fieldIndex, _ := range fields {
 		field := fields[fieldIndex]
 		if !skipLiquidCheck && (!strings.Contains(field.Value, "{{") || !strings.Contains(field.Value, "}}")) {
-			log.Printf("[DEBUG] Schemaless: No Liquid format found in field value '%s', skipping.", field.Value)
+			//log.Printf("[DEBUG] Schemaless: No Liquid format found in field value '%s', skipping.", field.Value)
 			continue
 		}
 
@@ -281,8 +281,6 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 
 		stringBuild := "$"
 		for _, match := range matches {
-			log.Printf("MATCH: %#v", match)
-
 			for i, matchValue := range match {
 				if i == 0 {
 					continue
@@ -325,7 +323,6 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 				stringBuild += matchValue
 			}
 
-			log.Printf("VALUE: %#v", field.Value)
 			if len(match) > 1 {
 				field.Value = strings.ReplaceAll(field.Value, match[0], stringBuild)
 				fields[fieldIndex].Value = field.Value
