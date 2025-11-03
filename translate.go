@@ -766,7 +766,9 @@ func GetStandard(inputStandard string, shuffleConfig ShuffleConfig) ([]byte, err
 	filepath := fmt.Sprintf("%sstandards/%s.json", getRootFolder(), inputStandard)
 	jsonFile, err := os.Open(filepath)
 	if err != nil {
-		log.Printf("[INFO] Schemaless: Problem finding file %s (4): %v. Loading the standard from Github and saving.", filepath, err)
+		if debug { 
+			log.Printf("[DEBUG] Schemaless: Problem finding file %s (4): %v. Loading the standard from Github and saving.", filepath, err)
+		}
 
 		err := LoadAndSaveStandard(inputStandard)
 		if err != nil {
@@ -774,14 +776,14 @@ func GetStandard(inputStandard string, shuffleConfig ShuffleConfig) ([]byte, err
 			return []byte{}, err
 		}
 
-		log.Printf("[INFO] Done loading standard '%s' from Shuffle's Github standards. Path: %s", inputStandard, filepath)
-
 		// Re-instantiate referece to the file
 		jsonFile, err = os.Open(filepath)
 		if err != nil {
-			log.Printf("[ERROR] Schemaless: Error re-opening file %s (5): %v", filepath, err)
+			log.Printf("[ERROR] Schemaless: No standard for file %s (5): %v", filepath, err)
 			return []byte{}, err
 		}
+
+		log.Printf("[INFO] Done loading standard '%s' from Shuffle's Github standards. Path: %s", inputStandard, filepath)
 	}
 
 	// Read the file into a byte array
