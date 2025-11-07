@@ -1895,17 +1895,25 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 		inputStructure = []byte(gptTranslated)
 	}
 
-	// FIXME: Why was this cache stuff implemented? This is confusing AF
+	// FIXME: Why was this cache stuff implemented? This is confusing 
 	err = SetStructureCache(ctx, keyToken, inputStructure)
 	if err != nil {
-		log.Printf("[ERROR] Schemaless: problem in SetStructureCache for keyToken %#v with inputStructure %#v: %v", keyToken, inputStructure, err)
-		return []byte{}, err
+		log.Printf("[WARNING] Schemaless: problem in SetStructureCache for keyToken %#v with inputStructure %#v: %v", keyToken, inputStructure, err)
+		//return []byte{}, err
 	}
 
-	returnStructure, err := GetStructureFromCache(ctx, keyToken)
-	if err != nil {
-		log.Printf("[ERROR] Schemaless: problem in return structure for keyToken %#v. Should run OpenAI and set cache!", keyToken)
-		return []byte{}, err
+	// This has a failure condition of cache being unavailable
+	// More complex possibilities for failure (:
+	returnStructure, cacheErr := GetStructureFromCache(ctx, keyToken)
+	if cacheErr != nil {
+		log.Printf("[WARNING] Schemaless: problem in return structure for keyToken %#v. Should run ai and set cache!", keyToken)
+
+		returnStructure = map[string]interface{}{}
+		err = json.Unmarshal(inputStructure, &returnStructure)
+		if err != nil {
+			log.Printf("[ERROR] Schemaless: Error in unmarshal of returnStructure from cache for keyToken (2) %#v: %v", keyToken, err)
+			//return []byte{}, err
+		}
 	}
 
 	//marshalledReturn, err := json.MarshalIndent(returnStructure, "", "\t")
@@ -1917,7 +1925,7 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	translation, modifiedInput, err := runJsonTranslation(ctx, []byte(startValue), returnStructure, keepOriginal)
 	if err != nil {
 		log.Printf("[ERROR] Error in runJsonTranslation: %v", err)
-		return []byte{}, err
+		return translation, err
 	}
 
 	//log.Printf("[DEBUG] Schemaless: Final translation output: %s", string(translation))
