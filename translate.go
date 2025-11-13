@@ -1852,9 +1852,7 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 				return []byte{}, err
 			}
 
-			//log.Printf("\n\nFOUND SUBSTANDARD (%s): %v\n\n", standardName, string(subStandard))
 			// FIXME: Find the list in the inputdata. Map each item to the substandard, and then return the list
-
 			foundConfig := ""
 			if len(inputConfig) > 0 {
 				foundConfig = inputConfig[0]
@@ -1884,7 +1882,6 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 			return []byte{}, err
 		}
 
-		//log.Printf("\n\n[DEBUG] GPT translated: %v. Should save this to file in folder 'examples' with filename %s\n\n", string(gptTranslated), keyTokenFile)
 		err = SaveTranslation(keyTokenFile, gptTranslated, shuffleConfig)
 		if err != nil {
 			log.Printf("[ERROR] Schemaless: Problem in SaveTranslation (3): %v", err)
@@ -1899,41 +1896,28 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	err = SetStructureCache(ctx, keyToken, inputStructure)
 	if err != nil {
 		log.Printf("[WARNING] Schemaless: problem in SetStructureCache for keyToken %#v with inputStructure %#v: %v", keyToken, inputStructure, err)
-		//return []byte{}, err
 	}
 
-	// This has a failure condition of cache being unavailable
-	// More complex possibilities for failure (:
 	returnStructure, cacheErr := GetStructureFromCache(ctx, keyToken)
 	if cacheErr != nil {
 		log.Printf("[WARNING] Schemaless: problem in return structure for keyToken %#v. Should run ai and set cache!", keyToken)
 
 		returnStructure = map[string]interface{}{}
-		err = json.Unmarshal(inputStructure, &returnStructure)
+		fixedCache := FixTranslationStructure(string(inputStructure))
+		err = json.Unmarshal([]byte(fixedCache), &returnStructure)
 		if err != nil {
 			log.Printf("[ERROR] Schemaless: Error in unmarshal of returnStructure from cache for keyToken (2) %#v: %v", keyToken, err)
 			//return []byte{}, err
 		}
 	}
 
-	//marshalledReturn, err := json.MarshalIndent(returnStructure, "", "\t")
-	//if err == nil {
-	//	log.Printf("MarshalledRet: %s", string(marshalledReturn))
-	//}
-	//log.Printf("[DEBUG] Structure received: %v", returnStructure)
-	//log.Printf("Startvalue (len(%d)): %s", len(startValue), string(startValue))
 	translation, modifiedInput, err := runJsonTranslation(ctx, []byte(startValue), returnStructure, keepOriginal)
 	if err != nil {
 		log.Printf("[ERROR] Error in runJsonTranslation: %v", err)
 		return translation, err
 	}
 
-	//log.Printf("[DEBUG] Schemaless: Final translation output: %s", string(translation))
-	//os.Exit(3)
-
 	_ = modifiedInput
-	//log.Printf("translation: %v", string(translation))
-	//log.Printf("modifiedInput: %v", string(modifiedInput))
 
 	return translation, nil
 }
