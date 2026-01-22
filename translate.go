@@ -111,10 +111,6 @@ Additional formatting rules:
 	//userQuery := fmt.Sprintf("Translate the given user input JSON structure to a standard format. Use the values from the standard to guide you what to look for. The standard format should follow the pattern:\n\n```json\n%s\n```\n\nUser Input:\n```json\n%s\n```\n\nGenerate the standard output structure without providing the expected output.", standardFormat, inputDataFormat)
 	userQuery := fmt.Sprintf("Standard:\n```json\n%s\n```\n\n\n\nUser Input:\n```json\n%s\n```", standardFormat, inputDataFormat)
 
-	if len(os.Getenv("OPENAI_API_KEY")) == 0 {
-		return standardFormat, errors.New("OPENAI_API_KEY not set")
-	}
-
 	if len(inputDataFormat) > maxInputSize {
 		return standardFormat, errors.New(fmt.Sprintf("Input data too long. Max is %d. Current is %d", maxInputSize, len(inputDataFormat)))
 	}
@@ -167,7 +163,39 @@ Additional formatting rules:
 
 	SaveQuery(keyTokenFile, userQuery, shuffleConfig)
 
-	openaiClient := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
+	apiKey := os.Getenv("AI_API_KEY")
+	aiRequestUrl := os.Getenv("AI_API_URL")
+	if len(apiKey) == 0 {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	if len(aiRequestUrl) == 0 {
+		aiRequestUrl = os.Getenv("OPENAI_API_URL")
+	}
+
+	if len(apiKey) == 0 {
+		return standardFormat, errors.New("AI_API_KEY not set")
+	}
+
+	config := openai.DefaultConfig(apiKey)
+	if len(aiRequestUrl) > 0 {
+		config.BaseURL = aiRequestUrl
+
+		if strings.Contains("azure", aiRequestUrl) {
+			config.APIType = openai.APITypeAzure
+		} else if strings.Contains("anthropic", aiRequestUrl) {
+			config.APIType = openai.APITypeAnthropic
+		} else if strings.Contains("cloudflare", aiRequestUrl) {
+			config.APIType = openai.APITypeCloudflareAzure
+		} else if strings.Contains("azuread", aiRequestUrl) {
+			config.APIType = openai.APITypeAzureAD
+		} else {
+			config.APIType = openai.APITypeOpenAI
+		}
+	}
+
+	openaiClient := openai.NewClientWithConfig(config)
+
 	contentOutput := ""
 	cnt := 0
 	for {
@@ -253,6 +281,10 @@ type Valuereplace struct {
 // {{list_tickets[0].description}} -> $list_tickets.#0.description
 // {{ticket.description}} -> $ticket.description
 func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Valuereplace {
+	if debug { 
+		//log.Printf("[DEBUG] LOOKING FOR TRANSLATION IN FIELDS: %#v", fields)
+	}
+
 	skipLiquidCheck := false
 	if len(skipLiquid) > 0 && skipLiquid[0] {
 		skipLiquidCheck = true
@@ -1508,7 +1540,7 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				//log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
 
 				// Basic, default translator
-				if strings.Contains(val, "[") { 
+				if strings.Contains(val, "[") || strings.Contains(val, "$") { 
 					fields := []Valuereplace{
 						Valuereplace{
 							Value: val,
@@ -1517,15 +1549,17 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 					fields = TranslateBadFieldFormats(fields, true) 
 					if len(fields) == 1 {
+						if debug { 
+							//log.Printf("[DEBUG] Schemaless: Translated bad field format for key '%s': '%s' -> '%s'", translationKey, val, fields[0].Value)
+						}
+
 						val = fields[0].Value
+					} else {
+						log.Printf("[ERROR] Schemaless: Unexpected number of fields after TranslateBadFieldFormats for key '%s': %d", translationKey, len(fields))
 					}
 				}
 
-				if strings.Contains(val, ".") {
-					//if debug {
-					//	log.Printf("[DEBUG] Schemaless: Digging deeper to find field %#v in input", translationValue)
-					//}
-
+				if strings.Contains(val, ".") || strings.Contains(val, "$") {
 					// Check for ends with item.value[] <- array
 					// This can't be handled properly without being something like .# or .#0
 					key := translationValue.(string)

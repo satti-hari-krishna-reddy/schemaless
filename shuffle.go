@@ -394,6 +394,10 @@ func FindShuffleFile(name, category string, shuffleConfig ShuffleConfig) ([]byte
 			categoryUrl += "&execution_id=" + shuffleConfig.ExecutionId
 		}
 
+		if len(shuffleConfig.Authorization) > 0 {
+			categoryUrl += "&authorization=" + shuffleConfig.Authorization
+		}
+
 		if debug { 
 			log.Printf("[DEBUG] Getting category WITHOUT cache from '%s'", categoryUrl)
 		}
