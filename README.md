@@ -4,9 +4,10 @@ A general purpose JSON standardization translation engine, using language models
 ## Goal
 Make it easy to standardize the output of given data, no matter what the input was. After the translation has been done with an LLM the first time, the keys are sorted and hashed, and the structure is saved, meaning if it was correct, you will ever only have run the same data structure thorugh the setup ONCE. 
 
-Requires OpenAI API key:
+If you want **NEW** automatic translations, it requires an API-key for any LLM provider. This is not required for old translations:
 ```
 export OPENAI_API_KEY=your_key
+export OPENAI_API_URL=https://your-provider
 ```
 
 ## Use the package
