@@ -94,13 +94,29 @@ func GptTranslate(keyTokenFile, standardFormat, inputDataFormat string, shuffleC
 
 	additionalCondition := fmt.Sprintf("")
 
-	systemMessage := fmt.Sprintf(`Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is '{"id": "The id of the ticket", "title": "The ticket title"}', and the user input is '{"key": "12345", "fields:": {"id": "1234", "summary": "The title of the ticket"}}', the output should be '{"id": "key", "title": "fields.summary"}'. ALWAYS go deeper than the top level of the User Input and choose accurate values like "fields.id" instead of just "fields" where it fits.
+	systemMessage := fmt.Sprintf(`INTRODUCTION 
 
-Additional formatting rules:
+Translate the given user input JSON structure to the provided standard format in the jq format. Use the values from the standard to guide you what to look for. 
+
+END INTRODUCTION
+----------
+JSON PARSING RULES 
+
+Ensure the output is valid JSON, and does NOT add more keys to the standard. Make sure each important key from the user input is in the standard. Empty fields in the standard are ok. If values are nested, ALWAYS add the nested value in jq format such as 'secret.version.value'. %sExample: If the standard is '{"id": "The id of the ticket", "title": "The ticket title"}', and the user input is '{"key": "12345", "fields:": {"id": "1234", "summary": "The title of the ticket"}}', the output should be '{"id": "key", "title": "fields.summary"}'. ALWAYS go deeper than the top level of the User Input and choose accurate values like "fields.id" instead of just "fields" where it fits.
+
+END PARSING RULES
+----------
+FORMATTING RULES 
+
 - jq formatting for loops is ok
-- Add a dollar sign in front of every translation: $key.subkey.subsubkey
+- Keep the same structure as the standard format. Don't remove fields.
 - If it makes sense, you can add multiple variables in the middle of descriptive text such as 'The ticket $data.id with title $data.title has been created'
+- If it is a value OR tells you exactly what the value is, just keep the value. No dollarsign or wrapping.
+- Add a dollar sign in front of every translation: $key.subkey.subsubkey. 
+- If the type is Integer or Number, make it an actual number - NOT a string with a number in it.
 - If the type is an Array, make it an actual JSON array with all the relevant keys. Example: Array type 'firstname & lastname' becomes [{"firstname": "$data[].firstname", "lastname": "$data[].lastname"}]
+
+END FORMATTING RULES
 `, additionalCondition)
 	// If translation is needed, you may use Liquid.
 
@@ -292,13 +308,6 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 
 	for fieldIndex, _ := range fields {
 		field := fields[fieldIndex]
-		if !skipLiquidCheck && (!strings.Contains(field.Value, "{{") || !strings.Contains(field.Value, "}}")) {
-			//log.Printf("[DEBUG] Schemaless: No Liquid format found in field value '%s', skipping.", field.Value)
-			continue
-		}
-
-		// App SDK pattern
-		//matchPattern := `([$]{1}([a-zA-Z0-9_@-]+\.?){1}([a-zA-Z0-9#_@-]+\.?){0,})`
 
 		// Used for testing
 		re := regexp.MustCompile(`{{\s*([a-zA-Z0-9_\.]+)(\[[0-9]*\])?(\.[a-zA-Z0-9_]+)?\s*}}`)
@@ -308,6 +317,28 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 
 		matches := re.FindAllStringSubmatch(field.Value, -1)
 		if len(matches) == 0 {
+			/*
+			if strings.HasPrefix(field.Value, "$.") {
+				field.Value = strings.ReplaceAll(field.Value, "$.", "")
+			} else {
+				// Look for matches for the format $.string
+				matchPattern := `([$]{1}[.]{1}([a-zA-Z0-9_@-]+\.?))`
+				re := regexp.MustCompile(matchPattern)
+				matches = re.FindAllStringSubmatch(field.Value, -1)
+
+				if len(matches) > 0 {
+					field.Value = strings.ReplaceAll(field.Value, "$.", "$")
+				}
+			}
+				
+			fields[fieldIndex].Value = field.Value
+			*/
+
+			// Replace it 
+			continue
+		}
+
+		if !skipLiquidCheck && (!strings.Contains(field.Value, "{{") || !strings.Contains(field.Value, "}}")) {
 			continue
 		}
 
@@ -358,7 +389,6 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 			if len(match) > 1 {
 				field.Value = strings.ReplaceAll(field.Value, match[0], stringBuild)
 				fields[fieldIndex].Value = field.Value
-				//log.Printf("VALUE: %#v", field.Value)
 			}
 
 			stringBuild = "$"
@@ -1358,6 +1388,10 @@ func getParsedMatch(match string) string {
 		match = strings.TrimPrefix(match, "$")
 	}
 
+	if strings.HasPrefix(match, "$.") {
+		match = strings.TrimPrefix(match, "$.")
+	}
+
 	if strings.HasSuffix(match, ".") {
 		match = strings.TrimSuffix(match, ".")
 	}
@@ -1540,7 +1574,8 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				//log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
 
 				// Basic, default translator
-				if strings.Contains(val, "[") || strings.Contains(val, "$") { 
+				//if strings.Contains(val, "[") {
+				if strings.Contains(val, "[") || strings.Contains(val, "$") || strings.Contains(val, "$.") {
 					fields := []Valuereplace{
 						Valuereplace{
 							Value: val,
@@ -1870,9 +1905,9 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 			return inputValue, nil
 		}
 
-		if debug {
-			log.Printf("[DEBUG] Schemaless: Got standard format for standard '%s': %s", inputStandard, string(standardFormat))
-		}
+		//if debug {
+		//	log.Printf("[DEBUG] Schemaless: Got standard format for standard '%s': %s", inputStandard, string(standardFormat))
+		//}
 
 		//if !skipSubstandard && len(trimmedStandard) > 2 && strings.Contains(trimmedStandard, ".json") && strings.HasPrefix(trimmedStandard, "[") && strings.HasSuffix(trimmedStandard, "]") {
 		trimmedStandard := strings.TrimSpace(string(standardFormat))
