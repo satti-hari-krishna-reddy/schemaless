@@ -317,9 +317,8 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 
 		matches := re.FindAllStringSubmatch(field.Value, -1)
 		if len(matches) == 0 {
-			/*
 			if strings.HasPrefix(field.Value, "$.") {
-				field.Value = strings.ReplaceAll(field.Value, "$.", "")
+				field.Value = strings.ReplaceAll(field.Value, "$.", "$")
 			} else {
 				// Look for matches for the format $.string
 				matchPattern := `([$]{1}[.]{1}([a-zA-Z0-9_@-]+\.?))`
@@ -332,7 +331,6 @@ func TranslateBadFieldFormats(fields []Valuereplace, skipLiquid ...bool) []Value
 			}
 				
 			fields[fieldIndex].Value = field.Value
-			*/
 
 			// Replace it 
 			continue
@@ -1415,11 +1413,18 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 	// Creating a new map to store the translated values
 	translatedInput := make(map[string]interface{})
-	if len(keepOriginal) > 0 && keepOriginal[0] == true {
+	keepOriginalMapped := false
+	if len(keepOriginal) > 0 {
+		keepOriginalMapped = keepOriginal[0] 
+	}
+
+	// FIXME: Re-enable for simplicity
+	if keepOriginalMapped { 
 		translatedInput["unmapped"] = parsedInput
 	}
 
 	for translationKey, translationValue := range translation {
+
 		// Find the field in the parsedInput
 		found := false
 		for inputKey, inputValue := range parsedInput {
@@ -1435,11 +1440,15 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 			found = true
 		}
 
-		if !found {
+		if found {
+			if debug {
+				log.Printf("[DEBUG] Schemaless: Direct match found for key '%s' with value '%v'", translationKey, translationValue)
+			}
+		} else {
 			// Skipping (for now?)
 			if _, ok := translationValue.(float64); ok {
 				if debug {
-					log.Printf("[DEBUG] NOT handling float/integer translations and keeping value instead. Key: %s, Value: %v", translationKey, translationValue)
+					//log.Printf("[DEBUG] NOT handling float/integer translations and keeping value instead. Key: %s, Value: %v", translationKey, translationValue)
 				}
 
 				translatedInput[translationKey] = translationValue
@@ -1497,7 +1506,7 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 						continue
 					}
 
-					output, _, err := runJsonTranslation(ctx, inputValue, newValue)
+					output, _, err := runJsonTranslation(ctx, inputValue, newValue, keepOriginalMapped)
 					if err != nil {
 						log.Printf("[ERROR] Schemaless: Error in runJsonTranslation for key '%s': %v", translationKey, err)
 						continue
@@ -1544,7 +1553,7 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 			} else if val, ok := translationValue.(map[string]interface{}); ok {
 				// Recurse it with the same function again
-				translation, _, err := runJsonTranslation(ctx, inputValue, val)
+				translation, _, err := runJsonTranslation(ctx, inputValue, val, keepOriginalMapped)
 				if err != nil {
 					log.Printf("[ERROR] Schemaless: Error in runJsonTranslation for key '%s': %v", translationKey, err)
 					translatedInput[translationKey] = translationValue
@@ -1571,11 +1580,13 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				translatedInput[translationKey] = translationValueParsed
 
 			} else if val, ok := translationValue.(string); ok {
-				//log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
+				if debug { 
+					log.Printf("[DEBUG] Schemaless: Looking for field %#v in input field %#v", translationValue, translationKey)
+				}
 
 				// Basic, default translator
 				//if strings.Contains(val, "[") {
-				if strings.Contains(val, "[") || strings.Contains(val, "$") || strings.Contains(val, "$.") {
+				if strings.Contains(val, "[") || strings.Contains(val, "$") {
 					fields := []Valuereplace{
 						Valuereplace{
 							Value: val,
@@ -1597,13 +1608,12 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 				if strings.Contains(val, ".") || strings.Contains(val, "$") {
 					// Check for ends with item.value[] <- array
 					// This can't be handled properly without being something like .# or .#0
-					key := translationValue.(string)
-					if strings.Contains(key, "[]") {
-						key = strings.ReplaceAll(key, "[]", ".#")
+					if strings.Contains(val, "[]") {
+						val = strings.ReplaceAll(val, "[]", ".#")
 					}
 
-					if strings.Contains(key, `"`) {
-						key = strings.ReplaceAll(key, `"`, "")
+					if strings.Contains(val, `"`) {
+						val = strings.ReplaceAll(val, `"`, "")
 					}
 
 					// Specific parser for $
@@ -1612,9 +1622,9 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 						// From app sdk => Same format.
 						matchPattern := `([$]{1}([a-zA-Z0-9_@-]+\.?){1}([a-zA-Z0-9#_@-]+\.?){0,})`
-						re := regexp.MustCompile(matchPattern)
 						// Find all occurrences
-						matches := re.FindAllString(key, -1)
+						re := regexp.MustCompile(matchPattern)
+						matches := re.FindAllString(val, -1)
 						for _, match := range matches {
 							newParsedMatch := getParsedMatch(match)
 							recursed, err := recurseFindKey(parsedInput, newParsedMatch, 0)
@@ -1632,10 +1642,10 @@ func runJsonTranslation(ctx context.Context, inputValue []byte, translation map[
 
 						translatedInput[translationKey] = newOutput 
 					} else {
-						recursed, err := recurseFindKey(parsedInput, key, 0)
+						recursed, err := recurseFindKey(parsedInput, val, 0)
 						if err != nil {
 							if debug {
-								log.Printf("[DEBUG] Schemaless Reverse problem: Error in RecurseFindKey for %#v: %v", key, err)
+								log.Printf("[DEBUG] Schemaless Reverse problem: Error in RecurseFindKey for %#v: %v", val, err)
 							}
 						}
 
@@ -1712,7 +1722,10 @@ func handleSubStandard(ctx context.Context, subStandard string, returnJson strin
 
 		for k, v := range mapJson {
 			if _, ok := v.([]interface{}); ok {
-				log.Printf("[DEBUG] Schemaless: Found a list in the mapJson. Should translate each item to the substandard. Key: %s", k)
+				if debug { 
+					log.Printf("[DEBUG] Schemaless: Found a list in the mapJson. Should translate each item to the substandard. JSON Key: '%s'", k)
+				}
+
 				listJson = v.([]interface{})
 				break
 			}
@@ -1724,18 +1737,20 @@ func handleSubStandard(ctx context.Context, subStandard string, returnJson strin
 		return []byte(`[]`), nil
 	}
 
-	log.Printf("[DEBUG] Schemaless: Found a list of length %d in the returnJson. Should translate each item to the substandard", len(listJson))
+	if debug { 
+		log.Printf("[DEBUG] Schemaless: Found a list of length %d in the returnJson. Should translate each item to the substandard", len(listJson))
+	}
 
 	// For each item in the list, translate it to the substandard
-	// Maybe do this with recursive Translate() calls?
-
-	skipAfterCount := 50
+	// Doing it with recursive Translate() calls
+	skipAfterCount := 100 
 	var wg sync.WaitGroup
 	var mu sync.Mutex // Mutex to safely access parsedOutput slice
 
 	parsedOutput := [][]byte{}
 	for cnt, listItem := range listJson {
-		// No goroutine on the first ones as we want to make sure caching is done properly
+
+		// Skip: No goroutine on the first ones as we want to make sure caching is done properly before goroutining the rest. Prevents duplicates (mostly)
 		if cnt == 0 {
 			marshalledBody, err := json.Marshal(listItem)
 			if err != nil {
@@ -1895,7 +1910,7 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	inputStructure = []byte(fixedOutput)
 	if inputStructErr == nil {
 		if debug {
-			//log.Printf("[DEBUG] Schemaless: Found existing structure for keyToken: '%s': %s", keyTokenFile, string(inputStructure))
+			log.Printf("[DEBUG] Schemaless: Found existing structure for keyToken: '%s': %s", keyTokenFile, string(inputStructure))
 		}
 	} else {
 		// Check if the standard exists at all
@@ -1905,11 +1920,10 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 			return inputValue, nil
 		}
 
-		//if debug {
-		//	log.Printf("[DEBUG] Schemaless: Got standard format for standard '%s': %s", inputStandard, string(standardFormat))
-		//}
+		if debug {
+			log.Printf("[DEBUG] Schemaless: Got standard format for standard '%s': %s", inputStandard, string(standardFormat))
+		}
 
-		//if !skipSubstandard && len(trimmedStandard) > 2 && strings.Contains(trimmedStandard, ".json") && strings.HasPrefix(trimmedStandard, "[") && strings.HasSuffix(trimmedStandard, "]") {
 		trimmedStandard := strings.TrimSpace(string(standardFormat))
 		if !skipSubstandard && len(trimmedStandard) > 2 && strings.HasPrefix(trimmedStandard, "[") && strings.HasSuffix(trimmedStandard, "]") {
 
@@ -1957,8 +1971,11 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 			return []byte{}, err
 		}
 
-		//log.Printf("[DEBUG] Saved GPT translation to file. Should now run OpenAI and set cache!")
 		inputStructure = []byte(gptTranslated)
+	}
+
+	if debug {
+		log.Printf("[DEBUG] Schemaless: Using inputStructure for keyToken '%s': %s", keyTokenFile, string(inputStructure))
 	}
 
 	// FIXME: Why was this cache stuff implemented? This is confusing 
@@ -1966,6 +1983,7 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 	if err != nil {
 		log.Printf("[WARNING] Schemaless: problem in SetStructureCache for keyToken %#v with inputStructure %#v: %v", keyToken, inputStructure, err)
 	}
+
 
 	returnStructure, cacheErr := GetStructureFromCache(ctx, keyToken)
 	if cacheErr != nil {
@@ -1978,6 +1996,10 @@ func Translate(ctx context.Context, inputStandard string, inputValue []byte, inp
 			log.Printf("[ERROR] Schemaless: Error in unmarshal of returnStructure from cache for keyToken (2) %#v: %v", keyToken, err)
 			//return []byte{}, err
 		}
+	}
+
+	if debug {
+		log.Printf("[DEBUG] Starting JSON translation with structure: %#v", returnStructure)
 	}
 
 	translation, modifiedInput, err := runJsonTranslation(ctx, []byte(startValue), returnStructure, keepOriginal)
